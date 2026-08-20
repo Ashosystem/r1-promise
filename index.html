@@ -6,103 +6,96 @@
   <title>Promise</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body {
-      width: 240px;
-      height: 282px;
-      overflow: hidden;
-      background: #000;
+    html, body { width: 240px; height: 282px; overflow: hidden; background: #000; }
+    iframe { width: 240px; height: 282px; border: none; display: block; }
+
+    /* Push-to-talk listening indicator (only shows while the side button is held) */
+    #pttIndicator {
+      position: fixed; top: 0; left: 0; right: 0;
+      display: none; align-items: center; justify-content: center; gap: 6px;
+      height: 22px; background: rgba(220,38,38,0.92); color: #fff;
+      font: 600 11px/1 system-ui, sans-serif; letter-spacing: .3px;
+      z-index: 99999; pointer-events: none;
     }
-    iframe {
-      width: 240px;
-      height: 282px;
-      border: none;
-      display: block;
+    #pttIndicator.on { display: flex; }
+    #pttIndicator .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #fff;
+      animation: pttPulse 0.9s infinite;
     }
-    #voiceBtn {
-      position: fixed;
-      bottom: 8px;
-      left: 8px;
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      background: #2563eb;
-      color: #fff;
-      border: none;
-      font-size: 16px;
-      cursor: pointer;
-      z-index: 9999;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-    }
-    #voiceBtn.recording {
-      background: #dc2626;
-      animation: pulse 1s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.12); }
-    }
+    @keyframes pttPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
   </style>
 </head>
 <body>
   <iframe
     id="appFrame"
-    src="https://ashosystem.github.io/promise-web-app/?r1=1&v=4"
+    src="https://ashosystem.github.io/promise-web-app/?r1=1&v=5"
     scrolling="yes"
     allowfullscreen
   ></iframe>
 
-  <button id="voiceBtn" title="Dictate">🎙️</button>
+  <div id="pttIndicator"><span class="dot"></span>Listening…</div>
 
   <script>
-    const btn = document.getElementById('voiceBtn');
     const frame = document.getElementById('appFrame');
+    const indicator = document.getElementById('pttIndicator');
     let recording = false;
 
-    btn.addEventListener('click', () => {
-      if (!recording) {
-        recording = true;
-        btn.classList.add('recording');
-        btn.textContent = '⏹️';
-        if (window.CreationVoiceHandler) {
-          CreationVoiceHandler.postMessage('start');
-        }
-      } else {
-        recording = false;
-        btn.classList.remove('recording');
-        btn.textContent = '🎙️';
-        if (window.CreationVoiceHandler) {
-          CreationVoiceHandler.postMessage('stop');
-        }
-      }
-    });
+    function showIndicator() { indicator.classList.add('on'); }
+    function hideIndicator() { indicator.classList.remove('on'); }
 
-    // Receive voice transcript from R1 and forward to iframe
-    window.addEventListener('message', (e) => {
-      // R1 delivers the transcript as a message with type 'voice' or raw string
-      if (!e.data) return;
+    function startRecording() {
+      if (recording) return;
+      recording = true;
+      showIndicator();
+      // Screen taps can't trigger native PTT, so we explicitly drive recording.
+      try { if (window.CreationVoiceHandler) CreationVoiceHandler.postMessage('start'); } catch (e) {}
+    }
+    function stopRecording() {
+      if (!recording) return;
+      recording = false;
+      hideIndicator();
+      try { if (window.CreationVoiceHandler) CreationVoiceHandler.postMessage('stop'); } catch (e) {}
+    }
 
-      let transcript = null;
-      if (typeof e.data === 'string') {
-        transcript = e.data;
-      } else if (e.data.transcript) {
-        transcript = e.data.transcript;
-      } else if (e.data.text) {
-        transcript = e.data.text;
-      } else if (e.data.type === 'voice' && e.data.value) {
-        transcript = e.data.value;
-      }
+    // Hardware push-to-talk: side button held → record, released → stop.
+    window.addEventListener('longPressStart', startRecording);
+    window.addEventListener('longPressEnd', stopRecording);
 
-      if (transcript) {
-        recording = false;
-        btn.classList.remove('recording');
-        btn.textContent = '🎙️';
-        // Forward to iframe
-        frame.contentWindow.postMessage({ type: 'r1-voice-transcript', text: transcript }, '*');
+    // Pull a transcript out of whatever shape the plugin message arrives in.
+    function extractTranscript(p) {
+      if (!p) return null;
+      if (p.transcript && (p.type === 'sttEnded' || !p.type)) return p.transcript;
+      if (p.transcript) return p.transcript;
+      let d = p.data;
+      if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) {} }
+      if (d && typeof d === 'object') {
+        if (d.transcript) return d.transcript;
+        let dd = d.data;
+        if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (e) {} }
+        if (dd && typeof dd === 'object' && dd.transcript) return dd.transcript;
       }
-    });
+      return null;
+    }
+
+    function deliverTranscript(text) {
+      if (!text) return;
+      recording = false;
+      hideIndicator();
+      // Forward into the app iframe; app.js inserts it into the focused field.
+      frame.contentWindow.postMessage({ type: 'r1-voice-transcript', text: text }, '*');
+    }
+
+    // STT results come back through the R1 plugin-message channel, NOT window 'message'.
+    // This is a plain-HTML creation with no r1-create SDK loaded, so owning
+    // window.onPluginMessage directly is safe (no SDK chain to break).
+    window.onPluginMessage = function (payload) {
+      const t = extractTranscript(payload);
+      if (t) deliverTranscript(t);
+    };
+
+    // Desktop testing fallback: hold Space to simulate the side button.
+    window.addEventListener('keydown', (e) => { if (e.code === 'Space' && !e.repeat) { e.preventDefault(); startRecording(); } });
+    window.addEventListener('keyup',   (e) => { if (e.code === 'Space') { e.preventDefault(); stopRecording(); } });
   </script>
 </body>
 </html>
