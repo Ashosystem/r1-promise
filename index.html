@@ -18,13 +18,91 @@
       border: none;
       display: block;
     }
+    #voiceBtn {
+      position: fixed;
+      bottom: 8px;
+      left: 8px;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    #voiceBtn.recording {
+      background: #dc2626;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.12); }
+    }
   </style>
 </head>
 <body>
   <iframe
+    id="appFrame"
     src="https://ashosystem.github.io/promise-web-app/"
     scrolling="yes"
     allowfullscreen
   ></iframe>
+
+  <button id="voiceBtn" title="Dictate">🎙️</button>
+
+  <script>
+    const btn = document.getElementById('voiceBtn');
+    const frame = document.getElementById('appFrame');
+    let recording = false;
+
+    btn.addEventListener('click', () => {
+      if (!recording) {
+        recording = true;
+        btn.classList.add('recording');
+        btn.textContent = '⏹️';
+        if (window.CreationVoiceHandler) {
+          CreationVoiceHandler.postMessage('start');
+        }
+      } else {
+        recording = false;
+        btn.classList.remove('recording');
+        btn.textContent = '🎙️';
+        if (window.CreationVoiceHandler) {
+          CreationVoiceHandler.postMessage('stop');
+        }
+      }
+    });
+
+    // Receive voice transcript from R1 and forward to iframe
+    window.addEventListener('message', (e) => {
+      // R1 delivers the transcript as a message with type 'voice' or raw string
+      if (!e.data) return;
+
+      let transcript = null;
+      if (typeof e.data === 'string') {
+        transcript = e.data;
+      } else if (e.data.transcript) {
+        transcript = e.data.transcript;
+      } else if (e.data.text) {
+        transcript = e.data.text;
+      } else if (e.data.type === 'voice' && e.data.value) {
+        transcript = e.data.value;
+      }
+
+      if (transcript) {
+        recording = false;
+        btn.classList.remove('recording');
+        btn.textContent = '🎙️';
+        // Forward to iframe
+        frame.contentWindow.postMessage({ type: 'r1-voice-transcript', text: transcript }, '*');
+      }
+    });
+  </script>
 </body>
 </html>
