@@ -37,7 +37,7 @@
 <body>
   <iframe
     id="appFrame"
-    src="https://ashosystem.github.io/promise-web-app/?r1=1&v=6"
+    src="https://ashosystem.github.io/promise-web-app/?r1=1&v=7"
     scrolling="yes"
     allowfullscreen
   ></iframe>
@@ -107,9 +107,11 @@
     window.addEventListener('keyup',   (e) => { if (e.code === 'Space') { e.preventDefault(); stopRecording(); } });
 
     /* ---- Screen rotation via accelerometer ---- */
-    // devicemotion is only available on the top Creation window, not the
-    // cross-origin iframe, so the wrapper detects orientation and both rotates
-    // the iframe element and tells the app to reflow to the new width.
+    // The cross-origin iframe can't read sensors, so the wrapper detects
+    // orientation, rotates the iframe element, and tells the app to reflow.
+    // R1 exposes window.creationSensors.accelerometer (values in g, ~0.7
+    // threshold). Plain devicemotion (m/s², ~7 threshold) is the fallback and
+    // does NOT fire reliably on the device — hence sensors first.
     let isLandscape = false;
     function applyOrientation(landscape) {
       if (landscape === isLandscape) return;
@@ -117,13 +119,40 @@
       frame.classList.toggle('landscape', landscape);
       try { frame.contentWindow.postMessage({ type: 'r1-orientation', landscape: landscape }, '*'); } catch (e) {}
     }
-    window.addEventListener('devicemotion', (ev) => {
-      const a = ev.accelerationIncludingGravity || ev.acceleration;
-      if (!a || a.x == null) return;
-      const ax = Math.abs(a.x);
-      if (ax > 7) applyOrientation(true);        // held sideways
-      else if (ax < 4) applyOrientation(false);  // upright (hysteresis band 4–7)
-    });
+
+    (async function initRotation() {
+      // Primary: R1 creationSensors accelerometer
+      if (typeof window.creationSensors !== 'undefined' &&
+          window.creationSensors.accelerometer) {
+        try {
+          const available = await window.creationSensors.accelerometer.isAvailable();
+          if (available) {
+            const cb = (data) => {
+              const ax = Math.abs((data && data.x) || 0);
+              if (!isLandscape && ax > 0.7) applyOrientation(true);
+              else if (isLandscape && ax < 0.4) applyOrientation(false);
+            };
+            window.creationSensors.accelerometer.start(cb, { frequency: 10 });
+            document.addEventListener('visibilitychange', () => {
+              if (document.hidden) window.creationSensors.accelerometer.stop();
+              else window.creationSensors.accelerometer.start(cb, { frequency: 10 });
+            });
+            return;
+          }
+        } catch (e) {}
+      }
+      // Fallback: devicemotion (desktop / other environments)
+      if (typeof DeviceMotionEvent !== 'undefined') {
+        window.addEventListener('devicemotion', (ev) => {
+          const a = ev.accelerationIncludingGravity || ev.acceleration;
+          if (!a || a.x == null) return;
+          const ax = Math.abs(a.x);
+          if (!isLandscape && ax > 7) applyOrientation(true);
+          else if (isLandscape && ax < 4) applyOrientation(false);
+        });
+      }
+    })();
+
     // Desktop testing fallback: 'r' toggles landscape.
     window.addEventListener('keydown', (e) => { if (e.key === 'r') applyOrientation(!isLandscape); });
   </script>
